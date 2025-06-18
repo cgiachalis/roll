@@ -265,74 +265,47 @@ struct RollAllOnlineVec {
   // function call operator that iterates by column
   void operator()() {
     
-    int count = 0;
+    bool is_na = false;
+    bool is_na_old = false;
     int n_obs = 0;
-    int x_new = 0;
-    int x_old = 0;
     int sum_x = 0;
     
     for (int i = 0; i < n_rows_x; i++) {
       
-      if ((x[i] == NA_INTEGER) || (x[i] != 0)) {
-        
-        x_new = 0;
-        
-      } else {
-        
-        x_new = 1;
-        
+      is_na = (x[i] == NA_INTEGER);
+      
+      if (i >= width) {
+        is_na_old = (x[i - width] == NA_INTEGER);
       }
       
-      // expanding window
-      if (i < width) {
+      roll::update_n_obs(n_obs, is_na, is_na_old, i, width);
+      
+      if (!is_na) {
         
-        // don't include if missing value
-        if ((x[i] != NA_INTEGER)) {
-          n_obs += 1;
+        // compute the sum
+        if (x[i] == 0) {
+          sum_x += 1;
         }
-        
-        sum_x = sum_x + x_new;
-        
-        count += 1;
         
       }
       
       // rolling window
       if (i >= width) {
-        
-        // don't include if missing value
-        if ((x[i] != NA_INTEGER) && (x[i - width] == NA_INTEGER)) {
-          
-          n_obs += 1;
-          
-        } else if ((x[i] == NA_INTEGER) && (x[i - width] != NA_INTEGER)) {
-          
-          n_obs -= 1;
-          
+        if (!is_na_old) {
+          if (x[i - width] == 0) {
+            sum_x -= 1;
+          }
         }
-        
-        if ((x[i - width] == NA_INTEGER) || (x[i - width] != 0)) {
-          
-          x_old = 0;
-          
-        } else {
-          
-          x_old = 1;
-          
-        }
-        
-        sum_x = sum_x + x_new - x_old;
-        
       }
       
       // don't compute if missing value and 'na_restore' argument is TRUE
-      if ((!na_restore) || (na_restore && (x[i] != NA_INTEGER))) {
+      if (!na_restore || (x[i] != NA_INTEGER)) {
         
         if (n_obs >= min_obs) {
           
           if (sum_x > 0) {
             rcpp_all[i] = 0;
-          } else if (n_obs == count) {
+          } else if ((i >= width && n_obs == width) || (i < width && n_obs == i + 1)) {
             rcpp_all[i] = 1;
           } else {
             rcpp_all[i] = NA_INTEGER;
@@ -380,19 +353,21 @@ struct RollAllOfflineVec : public Worker {
       // from 1D to 2D array
       int i = z;
       
-      int count = 0;
-      int n_obs = 0;
-      int sum_x = 0;
-      
       // don't compute if missing value and 'na_restore' argument is TRUE
-      if ((!na_restore) || (na_restore && (x[i] != NA_INTEGER))) {
+      if (!na_restore || (x[i] != NA_INTEGER)) {
+        
+        int n_obs = 0;
+        int sum_x = 0;
+        int is_na = false;
         
         // number of observations is either the window size or,
         // for partial results, the number of the current row
-        while ((width > count) && (i >= count)) {
+        for (int count = 0; (count < width) && (count <= i); count++) {
           
           // don't include if missing value
-          if (x[i - count] != NA_INTEGER) {
+          is_na = (x[i - count] == NA_INTEGER);
+          
+          if (!is_na) {
             
             // compute the sum
             if (x[i - count] == 0) {
@@ -403,15 +378,13 @@ struct RollAllOfflineVec : public Worker {
             
           }
           
-          count += 1;
-          
         }
         
         if (n_obs >= min_obs) {
           
           if (sum_x > 0) {
             rcpp_all[i] = 0;
-          } else if (n_obs == count) {
+          } else if ((i >= width && n_obs == width) || (i < width && n_obs == i + 1)) {
             rcpp_all[i] = 1;
           } else {
             rcpp_all[i] = NA_INTEGER;
@@ -459,6 +432,8 @@ struct RollSumOnlineVec {
   void operator()() {
     
     int n_obs = 0;
+    bool is_na = false;
+    bool is_na_old = false;
     long double lambda = 0;
     long double w_new = 0;
     long double w_old = 0;
@@ -466,84 +441,79 @@ struct RollSumOnlineVec {
     long double x_old = 0;
     long double sum_x = 0;
     
-    if (arma_weights[n - 1] == 0) {
-      lambda = 1;
-    } else if (width > 1) {
-      if (n > 1) {
-        lambda = arma_weights[n - 2] / arma_weights[n - 1]; // check already passed
-      } else {
-        lambda = arma_weights[n - 1];
-      }
-    } else {
-      lambda = arma_weights[n - 1];
-    }
-    
     for (int i = 0; i < n_rows_x; i++) {
       
-      if (std::isnan(x[i])) {
+      is_na = std::isnan(x[i]);
+      
+      if (i >= width) {
+        is_na_old = std::isnan(x[i - width]);
+      }
+      
+      roll::update_n_obs(n_obs, is_na, is_na_old, i, width);
+      
+      if (width > 1) {
         
-        w_new = 0;
-        x_new = 0;
+        if (n > 1) {
+          lambda = arma_weights[n - 2] / arma_weights[n - 1]; // check already passed
+        } else {
+          lambda = arma_weights[n - 1];
+        }
+        
+        if (!is_na) {
+          
+          w_new = arma_weights[n - 1];
+          x_new = x[i];
+          
+        } else {
+          
+          w_new = 0;
+          x_new = 0;
+          
+        }
+        
+        sum_x = lambda * sum_x + w_new * x_new;
+        
+        // rolling window
+        if (i >= width) {
+          
+          if (!is_na_old) {
+            
+            w_old = arma_weights[n - width];
+            x_old = x[i - width];
+            
+          } else {
+            
+            w_old = 0;
+            x_old = 0;
+            
+          }
+          
+          sum_x -= lambda * w_old * x_old;
+          
+        }
         
       } else {
         
-        w_new = arma_weights[n - 1];
-        x_new = x[i];
+        lambda = arma_weights[n - 1];
         
-      }
-      
-      // expanding window
-      if (i < width) {
-        
-        // don't include if missing value
-        if (!std::isnan(x[i])) {
-          n_obs += 1;
-        }
-        
-        if (width > 1) {
-          sum_x = lambda * sum_x + w_new * x_new;
-        } else {
-          sum_x = w_new * x_new;
-        }
-        
-      }
-      
-      // rolling window
-      if (i >= width) {
-        
-        // don't include if missing value
-        if (!std::isnan(x[i]) && std::isnan(x[i - width])) {
+        if (!is_na) {
           
-          n_obs += 1;
-          
-        } else if (std::isnan(x[i]) && !std::isnan(x[i - width])) {
-          
-          n_obs -= 1;
-          
-        }
-        
-        if (std::isnan(x[i - width])) {
-          
-          w_old = 0;
-          x_old = 0;
+          w_new = arma_weights[n - 1];
+          x_new = x[i];
           
         } else {
           
-          w_old = arma_weights[n - width];
-          x_old = x[i - width];
+          w_new = 0;
+          x_new = 0;
           
         }
         
-        if (width > 1) {
-          sum_x = lambda * sum_x + w_new * x_new - lambda * w_old * x_old;
-        } else {
-          sum_x = w_new * x_new;
-        }
+        sum_x = w_new * x_new;
         
       }
       
       // don't compute if missing value and 'na_restore' argument is TRUE
-      if ((!na_restore) || (na_restore && !std::isnan(x[i]))) {
+      if (!na_restore || !std::isnan(x[i])) {
         
         if (n_obs >= min_obs) {
           arma_sum[i] = sum_x;
@@ -593,27 +563,27 @@ struct RollSumOfflineVec : public Worker {
       // from 1D to 2D array
       int i = z;
       
-      int count = 0;
-      int n_obs = 0;
-      long double sum_x = 0;
-      
       // don't compute if missing value and 'na_restore' argument is TRUE
-      if ((!na_restore) || (na_restore && !std::isnan(x[i]))) {
+      if (!na_restore || !std::isnan(x[i])) {
+        
+        int n_obs = 0;
+        bool is_na = false;
+        long double sum_x = 0;
         
         // number of observations is either the window size or,
         // for partial results, the number of the current row
-        while ((width > count) && (i >= count)) {
+        for (int count = 0; (count < width) && (count <= i); count++) {
           
           // don't include if missing value
-          if (!std::isnan(x[i - count])) {
+          is_na = std::isnan(x[i - count]);
+          
+          if (!is_na) {
             
             // compute the sum
             sum_x += arma_weights[n - count - 1] * x[i - count];
             n_obs += 1;
             
           }
-          
-          count += 1;
           
         }
         
@@ -1508,69 +1478,40 @@ struct RollIdxMinOnlineVec {
   const arma::vec arma_weights;
   const int min_obs;
   const bool na_restore;
-  RVector<int> rcpp_idxmin;     // destination (pass by reference)
+  arma::ivec& arma_idxmin;      // destination (pass by reference)
   
   // initialize with source and destination
   RollIdxMinOnlineVec(const NumericVector x, const int n,
                       const int n_rows_x, const int width,
                       const arma::vec arma_weights, const int min_obs,
-                      const bool na_restore, IntegerVector rcpp_idxmin)
+                      const bool na_restore, arma::ivec& arma_idxmin)
     : x(x), n(n),
       n_rows_x(n_rows_x), width(width),
       arma_weights(arma_weights), min_obs(min_obs),
-      na_restore(na_restore), rcpp_idxmin(rcpp_idxmin) { }
+      na_restore(na_restore), arma_idxmin(arma_idxmin) { }
   
   // function call operator that iterates by index
   void operator()() {
     
     int n_obs = 0;
     int idxmin_x = 0;
+    bool is_na = false;
+    bool is_na_old = false;
     std::deque<int> deck(width);
     
     for (int i = 0; i < n_rows_x; i++) {
       
-      // expanding window
-      if (i < width) {
-        
-        // don't include if missing value
-        if (!std::isnan(x[i])) {
-          n_obs += 1;
-        }
-        
-        if (!std::isnan(x[i])) {
-          
-          while (!deck.empty() && (std::isnan(x[deck.back()]) || (x[i] < x[deck.back()]))) {
-            deck.pop_back();
-          }
-          
-          deck.push_back(i);
-          
-        }
-        
-        if (width > 1) {
-          idxmin_x = deck.front() + 1;
-        } else {
-          idxmin_x = 1;
-        }
-        
+      is_na = std::isnan(x[i]);
+      
+      if (i >= width) {
+        is_na_old = std::isnan(x[i - width]);
       }
       
-      // rolling window
-      if (i >= width) {
+      roll::update_n_obs(n_obs, is_na, is_na_old, i, width);
+      
+      if (width > 1) {
         
-        // don't include if missing value
-        if (!std::isnan(x[i]) && std::isnan(x[i - width])) {
-          
-          n_obs += 1;
-          
-        } else if (std::isnan(x[i]) && !std::isnan(x[i - width])) {
-          
-          n_obs -= 1;
-          
-        }
-        
-        if (!std::isnan(x[i])) {
-          
+        if (!is_na) {
           while (!deck.empty() && (std::isnan(x[deck.back()]) || (x[i] < x[deck.back()]))) {
             deck.pop_back();
           }
@@ -1579,31 +1520,38 @@ struct RollIdxMinOnlineVec {
           
         }
         
-        while (!deck.empty() && (deck.front() <= i - width)) {
-          deck.pop_front();
+        // rolling window
+        if (i >= width) {
+          while (!deck.empty() && (deck.front() <= i - width)) {
+            deck.pop_front();
+          }
         }
         
-        if (width > 1) {
-          idxmin_x = width - (i - deck.front());
-        } else {
-          idxmin_x = 1;
-        }
+        idxmin_x = deck.front();
         
+      } else {
+        idxmin_x = i;
       }
       
       // don't compute if missing value and 'na_restore' argument is TRUE
-      if ((!na_restore) || (na_restore && !std::isnan(x[i]))) {
+      if (!na_restore || !std::isnan(x[i])) {
         
         if (n_obs >= min_obs) {
-          rcpp_idxmin[i] = idxmin_x;
+          
+          if (i < width) {
+            arma_idxmin[i] = idxmin_x + 1;
+          } else if (i >= width) {
+            arma_idxmin[i] = width - (i - idxmin_x);
+          }
+          
         } else {
-          rcpp_idxmin[i] = NA_INTEGER;
+          arma_idxmin[i] = NA_INTEGER;
         }
         
       } else {
         
         // can be either NA or NaN
-        rcpp_idxmin[i] = (int)x[i];
+        arma_idxmin[i] = (int)x[i];
         
       }
       
@@ -1623,17 +1571,17 @@ struct RollIdxMinOfflineVec : public Worker {
   const arma::vec arma_weights;
   const int min_obs;
   const bool na_restore;
-  RVector<int> rcpp_idxmin;     // destination (pass by reference)
+  arma::ivec& arma_idxmin;      // destination (pass by reference)
   
   // initialize with source and destination
   RollIdxMinOfflineVec(const NumericVector x, const int n,
                        const int n_rows_x, const int width,
                        const arma::vec arma_weights, const int min_obs,
-                       const bool na_restore, IntegerVector rcpp_idxmin)
+                       const bool na_restore, arma::ivec& arma_idxmin)
     : x(x), n(n),
       n_rows_x(n_rows_x), width(width),
       arma_weights(arma_weights), min_obs(min_obs),
-      na_restore(na_restore), rcpp_idxmin(rcpp_idxmin) { }
+      na_restore(na_restore), arma_idxmin(arma_idxmin) { }
   
   // function call operator that iterates by index
   void operator()(std::size_t begin_index, std::size_t end_index) {
@@ -1642,19 +1590,21 @@ struct RollIdxMinOfflineVec : public Worker {
       // from 1D to 2D array
       int i = z;
       
-      int count = 0;
-      int n_obs = 0;
-      int idxmin_x = i;
-      
       // don't compute if missing value and 'na_restore' argument is TRUE
-      if ((!na_restore) || (na_restore && !std::isnan(x[i]))) {
+      if (!na_restore || !std::isnan(x[i])) {
+        
+        int n_obs = 0;
+        int idxmin_x = i;
+        bool is_na = false;
         
         // number of observations is either the window size or,
         // for partial results, the number of the current row
-        while ((width > count) && (i >= count)) {
+        for (int count = 0; (count < width) && (count <= i); count++) {
           
           // don't include if missing value
-          if (!std::isnan(x[i - count])) {
+          is_na = std::isnan(x[i - count]);
+          
+          if (!is_na) {
             
             // last element of sorted array
             // note: 'weights' must be greater than 0
@@ -1666,26 +1616,24 @@ struct RollIdxMinOfflineVec : public Worker {
             
           }
           
-          count += 1;
-          
         }
         
-        if ((n_obs >= min_obs)) {
+        if (n_obs >= min_obs) {
           
           if (i < width) {
-            rcpp_idxmin[i] = idxmin_x + 1;
+            arma_idxmin[i] = idxmin_x + 1;
           } else if (i >= width) {
-            rcpp_idxmin[i] = width - (i - idxmin_x);
+            arma_idxmin[i] = width - (i - idxmin_x);
           }
           
         } else {
-          rcpp_idxmin[i] = NA_INTEGER;
+          arma_idxmin[i] = NA_INTEGER;
         }
         
       } else {
         
         // can be either NA or NaN
-        rcpp_idxmin[i] = (int)x[i];
+        arma_idxmin[i] = (int)x[i];
         
       }
       
@@ -1704,68 +1652,40 @@ struct RollIdxMaxOnlineVec {
   const arma::vec arma_weights;
   const int min_obs;
   const bool na_restore;
-  RVector<int> rcpp_idxmax;     // destination (pass by reference)
+  arma::ivec& arma_idxmax;      // destination (pass by reference)
   
   // initialize with source and destination
   RollIdxMaxOnlineVec(const NumericVector x, const int n,
                       const int n_rows_x, const int width,
                       const arma::vec arma_weights, const int min_obs,
-                      const bool na_restore, IntegerVector rcpp_idxmax)
+                      const bool na_restore, arma::ivec& arma_idxmax)
     : x(x), n(n),
       n_rows_x(n_rows_x), width(width),
       arma_weights(arma_weights), min_obs(min_obs),
-      na_restore(na_restore), rcpp_idxmax(rcpp_idxmax) { }
+      na_restore(na_restore), arma_idxmax(arma_idxmax) { }
   
   // function call operator that iterates by index
   void operator()() {
     
     int n_obs = 0;
     int idxmax_x = 0;
+    bool is_na = false;
+    bool is_na_old = false;
     std::deque<int> deck(width);
     
     for (int i = 0; i < n_rows_x; i++) {
       
-      // expanding window
-      if (i < width) {
-        
-        // don't include if missing value
-        if (!std::isnan(x[i])) {
-          n_obs += 1;
-        }
-        
-        if (!std::isnan(x[i])) {
-          
-          while (!deck.empty() && (std::isnan(x[deck.back()]) || (x[i] > x[deck.back()]))) {
-            deck.pop_back();
-          }
-          
-          deck.push_back(i);
-          
-        }
-        
-        if (width > 1) {
-          idxmax_x = deck.front() + 1;
-        } else {
-          idxmax_x = 1;
-        }
-        
+      is_na = std::isnan(x[i]);
+      
+      if (i >= width) {
+        is_na_old = std::isnan(x[i - width]);
       }
       
-      // rolling window
-      if (i >= width) {
+      roll::update_n_obs(n_obs, is_na, is_na_old, i, width);
+      
+      if (width > 1) {
         
-        // don't include if missing value
-        if (!std::isnan(x[i]) && std::isnan(x[i - width])) {
-          
-          n_obs += 1;
-          
-        } else if (std::isnan(x[i]) && !std::isnan(x[i - width])) {
-          
-          n_obs -= 1;
-          
-        }
-        
-        if (!std::isnan(x[i])) {
+        if (!is_na) {
           
           while (!deck.empty() && (std::isnan(x[deck.back()]) || (x[i] > x[deck.back()]))) {
             deck.pop_back();
@@ -1775,31 +1695,38 @@ struct RollIdxMaxOnlineVec {
           
         }
         
-        while (!deck.empty() && (deck.front() <= i - width)) {
-          deck.pop_front();
+        // rolling window
+        if (i >= width) {
+          while (!deck.empty() && (deck.front() <= i - width)) {
+            deck.pop_front();
+          }
         }
         
-        if (width > 1) {
-          idxmax_x = width - (i - deck.front());
-        } else {
-          idxmax_x = 1;
-        }
+        idxmax_x = deck.front();
         
+      } else {
+        idxmax_x = i;
       }
       
       // don't compute if missing value and 'na_restore' argument is TRUE
-      if ((!na_restore) || (na_restore && !std::isnan(x[i]))) {
+      if (!na_restore || !std::isnan(x[i])) {
         
         if (n_obs >= min_obs) {
-          rcpp_idxmax[i] = idxmax_x;
+          
+          if (i < width) {
+            arma_idxmax[i] = idxmax_x + 1;
+          } else if (i >= width) {
+            arma_idxmax[i] = width - (i - idxmax_x);
+          }
+          
         } else {
-          rcpp_idxmax[i] = NA_INTEGER;
+          arma_idxmax[i] = NA_INTEGER;
         }
         
       } else {
         
         // can be either NA or NaN
-        rcpp_idxmax[i] = (int)x[i];
+        arma_idxmax[i] = (int)x[i];
         
       }
       
@@ -1819,17 +1746,17 @@ struct RollIdxMaxOfflineVec : public Worker {
   const arma::vec arma_weights;
   const int min_obs;
   const bool na_restore;
-  RVector<int> rcpp_idxmax;     // destination (pass by reference)
+  arma::ivec& arma_idxmax;      // destination (pass by reference)
   
   // initialize with source and destination
   RollIdxMaxOfflineVec(const NumericVector x, const int n,
                        const int n_rows_x, const int width,
                        const arma::vec arma_weights, const int min_obs,
-                       const bool na_restore, IntegerVector rcpp_idxmax)
+                       const bool na_restore, arma::ivec& arma_idxmax)
     : x(x), n(n),
       n_rows_x(n_rows_x), width(width),
       arma_weights(arma_weights), min_obs(min_obs),
-      na_restore(na_restore), rcpp_idxmax(rcpp_idxmax) { }
+      na_restore(na_restore), arma_idxmax(arma_idxmax) { }
   
   // function call operator that iterates by index
   void operator()(std::size_t begin_index, std::size_t end_index) {
@@ -1838,19 +1765,21 @@ struct RollIdxMaxOfflineVec : public Worker {
       // from 1D to 2D array
       int i = z;
       
-      int count = 0;
-      int n_obs = 0;
-      int idxmax_x = i;
-      
       // don't compute if missing value and 'na_restore' argument is TRUE
-      if ((!na_restore) || (na_restore && !std::isnan(x[i]))) {
+      if (!na_restore || !std::isnan(x[i])) {
+        
+        int n_obs = 0;
+        int idxmax_x = i;
+        bool is_na = false;
         
         // number of observations is either the window size or,
         // for partial results, the number of the current row
-        while ((width > count) && (i >= count)) {
+        for (int count = 0; (count < width) && (count <= i); count++) {
           
           // don't include if missing value
-          if (!std::isnan(x[i - count])) {
+          is_na = std::isnan(x[i - count]);
+          
+          if (!is_na) {
             
             // first element of sorted array
             // note: 'weights' must be greater than 0
@@ -1862,26 +1791,24 @@ struct RollIdxMaxOfflineVec : public Worker {
             
           }
           
-          count += 1;
-          
         }
         
-        if ((n_obs >= min_obs)) {
+        if (n_obs >= min_obs) {
           
           if (i < width) {
-            rcpp_idxmax[i] = idxmax_x + 1;
+            arma_idxmax[i] = idxmax_x + 1;
           } else if (i >= width) {
-            rcpp_idxmax[i] = width - (i - idxmax_x);
+            arma_idxmax[i] = width - (i - idxmax_x);
           }
           
         } else {
-          rcpp_idxmax[i] = NA_INTEGER;
+          arma_idxmax[i] = NA_INTEGER;
         }
         
       } else {
         
         // can be either NA or NaN
-        rcpp_idxmax[i] = (int)x[i];
+        arma_idxmax[i] = (int)x[i];
         
       }
       
@@ -2347,7 +2274,10 @@ struct RollVarOnlineVec {
   void operator()() {
     
     int n_obs = 0;
+    bool is_na = false;
+    bool is_na_old = false;
     long double lambda = 0;
+    long double lambda_sq = 0;
     long double w_new = 0;
     long double w_old = 0; 
     long double x_new = 0;
@@ -2359,154 +2289,117 @@ struct RollVarOnlineVec {
     long double mean_prev_x = 0;
     long double mean_x = 0;
     
-    if (width > 1) {
-      if (n > 1) {
-        lambda = arma_weights[n - 2] / arma_weights[n - 1]; // check already passed
-      } else {
-        lambda = arma_weights[n - 1];
-      }
-    } else {
-      lambda = arma_weights[n - 1];
-    }
-    
     for (int i = 0; i < n_rows_x; i++) {
       
-      if (std::isnan(x[i])) {
-        
-        w_new = 0;
-        x_new = 0;
-        
-      } else {
-        
-        w_new = arma_weights[n - 1];
-        x_new = x[i];
-        
-      }
+      is_na = std::isnan(x[i]);
       
-      // expanding window
-      if (i < width) {
-        
-        // don't include if missing value
-        if (!std::isnan(x[i])) {
-          n_obs += 1;
-        }
-        
-        if (width > 1) {
-          
-          sum_w = lambda * sum_w + w_new;
-          sum_x = lambda * sum_x + w_new * x_new;
-          sumsq_w = pow(lambda, (long double)2.0) * sumsq_w + pow(w_new, (long double)2.0);
-          
-        } else {
-          
-          sum_w = w_new;
-          sum_x = w_new * x_new;
-          sumsq_w = pow(w_new, (long double)2.0);
-          
-        }
-        
-        if (center && (n_obs > 0)) {
-          
-          // compute the mean
-          mean_prev_x = mean_x;
-          mean_x = sum_x / sum_w;
-          
-        }
-        
-        // compute the sum of squares
-        if (!std::isnan(x[i]) && (n_obs > 1)) {
-          
-          sumsq_x = lambda * sumsq_x +
-            w_new * (x_new - mean_x) * (x_new - mean_prev_x);
-          
-        } else if (std::isnan(x[i])) {
-          
-          sumsq_x = lambda * sumsq_x;
-          
-        } else if (!std::isnan(x[i]) && (n_obs == 1) && !center) {
-          
-          sumsq_x = w_new * pow(x_new, (long double)2.0);
-          
-        }
-        
-      }
-      
-      // rolling window
       if (i >= width) {
+        is_na_old = std::isnan(x[i - width]);
+      }
+      
+      roll::update_n_obs(n_obs, is_na, is_na_old, i, width);
+      
+      if (width > 1) {
         
-        // don't include if missing value
-        if (!std::isnan(x[i]) && std::isnan(x[i - width])) {
-          
-          n_obs += 1;
-          
-        } else if (std::isnan(x[i]) && !std::isnan(x[i - width])) {
-          
-          n_obs -= 1;
-          
+        if (n > 1) {
+          lambda = arma_weights[n - 2] / arma_weights[n - 1]; // check already passed
+        } else {
+          lambda = arma_weights[n - 1];
         }
         
-        if (std::isnan(x[i - width])) {
+        lambda_sq = lambda * lambda;
+        
+        if (!is_na) {
           
-          w_old = 0;
-          x_old = 0;
+          w_new = arma_weights[n - 1];
+          x_new = x[i];
           
         } else {
           
-          w_old = arma_weights[n - width];
-          x_old = x[i - width];
+          w_new = 0;
+          x_new = 0;
           
         }
         
-        if (width > 1) {
+        sum_w = lambda * sum_w + w_new;
+        sum_x = lambda * sum_x + w_new * x_new;
+        sumsq_w = lambda_sq * sumsq_w + w_new * w_new;
+        
+        // expanding window
+        if (i < width) {
           
-          sum_w = lambda * sum_w + w_new - lambda * w_old;
-          sum_x = lambda * sum_x + w_new * x_new - lambda * w_old * x_old;
-          sumsq_w = pow(lambda, (long double)2.0) * sumsq_w +
-            pow(w_new, (long double)2.0) - pow(lambda * w_old, (long double)2.0);
+          if (center && (n_obs > 0)) {
+            
+            // compute the mean
+            mean_prev_x = mean_x;
+            mean_x = sum_x / sum_w;
+            
+          }
           
+          // compute the sum of squares
+          if (!is_na) {
+            
+            sumsq_x = lambda * sumsq_x +
+              w_new * (x_new - mean_x) * (x_new - mean_prev_x);
+            
+          } else {
+            sumsq_x = lambda * sumsq_x;
+          }
+          
+          // rolling window
         } else {
           
-          sum_w = w_new;
-          sum_x = w_new * x_new;
-          sumsq_w = pow(w_new, (long double)2.0);
+          if (!is_na_old) {
+            
+            w_old = arma_weights[n - width];
+            x_old = x[i - width];
+            
+          } else {
+            
+            w_old = 0;
+            x_old = 0;
+            
+          }
           
-        }
-        
-        if (center && (n_obs > 0)) {
+          sum_w -= lambda * w_old;
+          sum_x -= lambda * w_old * x_old;
+          sumsq_w -= lambda_sq * w_old * w_old;
           
-          // compute the mean
-          mean_prev_x = mean_x;
-          mean_x = sum_x / sum_w;
+          if (center) {
+            
+            // compute the mean
+            mean_prev_x = mean_x;
+            mean_x = sum_x / sum_w;
+            
+          }
           
-        }
-        
-        // compute the sum of squares
-        if (!std::isnan(x[i]) && !std::isnan(x[i - width])) {
-          
-          sumsq_x = lambda * sumsq_x +
-            w_new * (x_new - mean_x) * (x_new - mean_prev_x) -
-            lambda * w_old * (x_old - mean_x) * (x_old - mean_prev_x);
-          
-        } else if (!std::isnan(x[i]) && std::isnan(x[i - width])) {
-          
-          sumsq_x = lambda * sumsq_x +
-            w_new * (x_new - mean_x) * (x_new - mean_prev_x);
-          
-        } else if (std::isnan(x[i]) && !std::isnan(x[i - width])) {
-          
-          sumsq_x = lambda * sumsq_x -
-            lambda * w_old * (x_old - mean_x) * (x_old - mean_prev_x);
-          
-        } else if (std::isnan(x[i]) || std::isnan(x[i - width])) {
-          
-          sumsq_x = lambda * sumsq_x;
+          // compute the sum of squares
+          if (!is_na && !is_na_old) {
+            
+            sumsq_x = lambda * sumsq_x +
+              w_new * (x_new - mean_x) * (x_new - mean_prev_x) -
+              lambda * w_old * (x_old - mean_x) * (x_old - mean_prev_x);
+            
+          } else if (!is_na && is_na_old) {
+            
+            sumsq_x = lambda * sumsq_x +
+              w_new * (x_new - mean_x) * (x_new - mean_prev_x);
+            
+          } else if (is_na && !is_na_old) {
+            
+            sumsq_x = lambda * sumsq_x -
+              lambda * w_old * (x_old - mean_x) * (x_old - mean_prev_x);
+            
+          } else if (is_na && is_na_old) {
+            sumsq_x = lambda * sumsq_x;
+          }
           
         }
         
       }
       
       // don't compute if missing value
-      if ((!na_restore) || (na_restore && !std::isnan(x[i]))) {
+      if (!na_restore || !std::isnan(x[i])) {
         
         if ((n_obs > 1) && (n_obs >= min_obs)) {
           arma_var[i] = sumsq_x / (sum_w - sumsq_w / sum_w);
@@ -2522,7 +2415,6 @@ struct RollVarOnlineVec {
       }
       
     }
-    
   }
   
 };
@@ -2559,31 +2451,31 @@ struct RollVarOfflineVec : public Worker {
       // from 1D to 2D array
       int i = z;
       
-      long double mean_x = 0;
-      
       // don't compute if missing value and 'na_restore' argument is TRUE
-      if ((!na_restore) || (na_restore && !std::isnan(x[i]))) {
+      if (!na_restore || !std::isnan(x[i])) {
+        
+        bool is_na = false;
+        long double mean_x = 0;
         
         if (center) {
           
-          int count = 0;
           long double sum_w = 0;
           long double sum_x = 0;
           
           // number of observations is either the window size or,
           // for partial results, the number of the current row
-          while ((width > count) && (i >= count)) {
+          for (int count = 0; (count < width) && (count <= i); count++) {
             
             // don't include if missing value
-            if (!std::isnan(x[i - count])) {
+            is_na = std::isnan(x[i - count]);
+            
+            if (!is_na) {
               
               // compute the sum
               sum_w += arma_weights[n - count - 1];
               sum_x += arma_weights[n - count - 1] * x[i - count];
               
             }
-            
-            count += 1;
             
           }
           
@@ -2592,7 +2484,6 @@ struct RollVarOfflineVec : public Worker {
           
         }
         
-        int count = 0;
         int n_obs = 0;
         long double sum_w = 0;
         long double sumsq_w = 0;
@@ -2600,28 +2491,32 @@ struct RollVarOfflineVec : public Worker {
         
         // number of observations is either the window size or,
         // for partial results, the number of the current row
-        while ((width > count) && (i >= count)) {
+        for (int count = 0; (count < width) && (count <= i); count++) {
+          
+          is_na = std::isnan(x[i - count]);
           
           // don't include if missing value
-          if (!std::isnan(x[i - count])) {
+          if (!is_na) {
             
             sum_w += arma_weights[n - count - 1];
-            sumsq_w += pow(arma_weights[n - count - 1], 2.0);
+            sumsq_w += arma_weights[n - count - 1] * arma_weights[n - count - 1];
             
             // compute the sum of squares with 'center' argument
             if (center) {
+              
               sumsq_x += arma_weights[n - count - 1] *
-                pow(x[i - count] - mean_x, (long double)2.0);
+                (x[i - count] - mean_x) * (x[i - count] - mean_x);
+              
             } else if (!center) {
+              
               sumsq_x += arma_weights[n - count - 1] *
-                pow(x[i - count], 2.0);
+                x[i - count] * x[i - count];
+              
             }
             
             n_obs += 1;
             
           }
-          
-          count += 1;
           
         }
         
@@ -3009,9 +2904,13 @@ struct RollScaleOnlineVec {
   void operator()() {
     
     int n_obs = 0;
+    bool is_na = false;
+    bool is_na_old = false;
     long double lambda = 0;
+    long double lambda_sq = 0;
     long double w_new = 0;
-    long double w_old = 0; 
+    long double w_old = 0;
+    long double x_first = 0;
     long double x_new = 0;
     long double x_old = 0;
     long double sum_w = 0;
@@ -3021,132 +2920,160 @@ struct RollScaleOnlineVec {
     long double mean_prev_x = 0;
     long double mean_x = 0;
     long double var_x = 0;
-    long double x_ij = 0;
     
     if (width > 1) {
-      if (n > 1) {
-        lambda = arma_weights[n - 2] / arma_weights[n - 1]; // check already passed
-      } else {
-        lambda = arma_weights[n - 1];
-      }
+      
     } else {
       lambda = arma_weights[n - 1];
     }
     
     for (int i = 0; i < n_rows_x; i++) {
       
-      if (std::isnan(x[i])) {
-        
-        w_new = 0;
-        x_new = 0;
-        
-      } else {
-        
-        w_new = arma_weights[n - 1];
-        x_new = x[i];
-        x_ij = x[i];
-        
+      is_na = std::isnan(x[i]);
+      
+      if (i >= width) {
+        is_na_old = std::isnan(x[i - width]);
       }
       
-      // expanding window
-      if (i < width) {
+      roll::update_n_obs(n_obs, is_na, is_na_old, i, width);
+      
+      if (width > 1) {
         
-        // don't include if missing value
-        if (!std::isnan(x[i])) {
-          n_obs += 1;
+        if (n > 1) {
+          lambda = arma_weights[n - 2] / arma_weights[n - 1]; // check already passed
+        } else {
+          lambda = arma_weights[n - 1];
         }
         
-        if (width > 1) {
+        lambda_sq = lambda * lambda;
+        
+        if (!is_na) {
           
-          sum_w = lambda * sum_w + w_new;
-          sum_x = lambda * sum_x + w_new * x_new;
-          sumsq_w = pow(lambda, (long double)2.0) * sumsq_w + pow(w_new, (long double)2.0);
+          w_new = arma_weights[n - 1];
+          x_new = x[i];
+          x_first = x[i]; // keep first non-missing value
           
         } else {
           
-          sum_w = w_new;
-          sum_x = w_new * x_new;
-          sumsq_w = pow(w_new, (long double)2.0);
+          w_new = 0;
+          x_new = 0;
           
         }
         
-        if (center && (n_obs > 0)) {
-          
-          // compute the mean
-          mean_prev_x = mean_x;
-          mean_x = sum_x / sum_w;
-          
-        }
+        sum_w = lambda * sum_w + w_new;
+        sum_x = lambda * sum_x + w_new * x_new;
+        sumsq_w = lambda_sq * sumsq_w + w_new * w_new;
         
-        if (scale) {
+        // expanding window
+        if (i < width) {
           
-          // compute the sum of squares
-          if (!std::isnan(x[i]) && (n_obs > 1)) {
+          if (center && (n_obs > 0)) {
             
-            sumsq_x = lambda * sumsq_x +
-              w_new * (x_new - mean_x) * (x_new - mean_prev_x);
-            
-          } else if (std::isnan(x[i])) {
-            
-            sumsq_x = lambda * sumsq_x;
-            
-          } else if (!std::isnan(x[i]) && (n_obs == 1) && !center) {
-            
-            sumsq_x = w_new * pow(x_new, (long double)2.0);
+            // compute the mean
+            mean_prev_x = mean_x;
+            mean_x = sum_x / sum_w;
             
           }
           
-          var_x = sumsq_x / (sum_w - sumsq_w / sum_w);
+          if (scale) {
+            
+            // compute the sum of squares
+            if (!is_na && (n_obs > 1)) {
+              
+              sumsq_x = lambda * sumsq_x +
+                w_new * (x_new - mean_x) * (x_new - mean_prev_x);
+              
+            } else if (!is_na && (n_obs == 1) && !center) {
+              sumsq_x = w_new * x_new * x_new;
+            } else {
+              sumsq_x = lambda * sumsq_x;
+            }
+            
+            var_x = sumsq_x / (sum_w - sumsq_w / sum_w);
+            
+          }
+          
+          // rolling window
+        } else {
+          
+          if (!is_na_old) {
+            
+            w_old = arma_weights[n - width];
+            x_old = x[i - width];
+            
+          } else {
+            
+            w_old = 0;
+            x_old = 0;
+            
+          }
+          
+          sum_w -= lambda * w_old;
+          sum_x -= lambda * w_old * x_old;
+          sumsq_w -= lambda_sq * w_old * w_old;
+          
+          
+          if (center && (n_obs > 0)) {
+            
+            // compute the mean
+            mean_prev_x = mean_x;
+            mean_x = sum_x / sum_w;
+            
+          }
+          
+          if (scale) {
+            
+            // compute the sum of squares
+            if (!is_na && !is_na_old) {
+              
+              sumsq_x = lambda * sumsq_x +
+                w_new * (x_new - mean_x) * (x_new - mean_prev_x) -
+                lambda * w_old * (x_old - mean_x) * (x_old - mean_prev_x);
+              
+            } else if (!is_na && is_na_old) {
+              
+              sumsq_x = lambda * sumsq_x +
+                w_new * (x_new - mean_x) * (x_new - mean_prev_x);
+              
+            } else if (is_na && !is_na_old) {
+              
+              sumsq_x = lambda * sumsq_x -
+                lambda * w_old * (x_old - mean_x) * (x_old - mean_prev_x);
+              
+            } else if (is_na && is_na_old) {
+              sumsq_x = lambda * sumsq_x;
+            }
+            
+            var_x = sumsq_x / (sum_w - sumsq_w / sum_w);
+            
+          }
           
         }
         
-      }
-      
-      // rolling window
-      if (i >= width) {
+      } else {
         
-        // don't include if missing value
-        if (!std::isnan(x[i]) && std::isnan(x[i - width])) {
-          
-          n_obs += 1;
-          
-        } else if (std::isnan(x[i]) && !std::isnan(x[i - width])) {
-          
-          n_obs -= 1;
-          
-        }
+        lambda = arma_weights[n - 1];
         
-        if (std::isnan(x[i - width])) {
+        if (!is_na) {
           
-          w_old = 0;
-          x_old = 0;
+          w_new = arma_weights[n - 1];
+          x_new = x[i];
+          x_first = x[i]; // keep first non-missing value
           
         } else {
           
-          w_old = arma_weights[n - width];
-          x_old = x[i - width];
+          w_new = 0;
+          x_new = 0;
           
         }
         
-        if (width > 1) {
-          
-          sum_w = lambda * sum_w + w_new - lambda * w_old;
-          sum_x = lambda * sum_x + w_new * x_new - lambda * w_old * x_old;
-          sumsq_w = pow(lambda, (long double)2.0) * sumsq_w +
-            pow(w_new, (long double)2.0) - pow(lambda * w_old, (long double)2.0);
-          
-        } else {
-          
-          sum_w = w_new;
-          sum_x = w_new * x_new;
-          sumsq_w = pow(w_new, (long double)2.0);
-          
-        }
+        sum_w = w_new;
+        sum_x = w_new * x_new;
+        sumsq_w = w_new * w_new;
         
         if (center && (n_obs > 0)) {
           
           // compute the mean
-          mean_prev_x = mean_x;
           mean_x = sum_x / sum_w;
           
         }
@@ -3154,26 +3081,10 @@ struct RollScaleOnlineVec {
         if (scale) {
           
           // compute the sum of squares
-          if (!std::isnan(x[i]) && !std::isnan(x[i - width])) {
-            
-            sumsq_x = lambda * sumsq_x +
-              w_new * (x_new - mean_x) * (x_new - mean_prev_x) -
-              lambda * w_old * (x_old - mean_x) * (x_old - mean_prev_x);
-            
-          } else if (!std::isnan(x[i]) && std::isnan(x[i - width])) {
-            
-            sumsq_x = lambda * sumsq_x +
-              w_new * (x_new - mean_x) * (x_new - mean_prev_x);
-            
-          } else if (std::isnan(x[i]) && !std::isnan(x[i - width])) {
-            
-            sumsq_x = lambda * sumsq_x -
-              lambda * w_old * (x_old - mean_x) * (x_old - mean_prev_x);
-            
-          } else if (std::isnan(x[i]) || std::isnan(x[i - width])) {
-            
-            sumsq_x = lambda * sumsq_x;
-            
+          if (!is_na) {
+            sumsq_x = w_new * (x_new - mean_x) * (x_new - mean_x);
+          } else {
+            sumsq_x = 0;
           }
           
           var_x = sumsq_x / (sum_w - sumsq_w / sum_w);
@@ -3183,21 +3094,31 @@ struct RollScaleOnlineVec {
       }
       
       // don't compute if missing value and 'na_restore' argument is TRUE
-      if ((!na_restore) || (na_restore && !std::isnan(x[i]))) {
+      if (!na_restore || !std::isnan(x[i])) {
         
         if (n_obs >= min_obs) {
           
-          if (scale && ((n_obs <= 1) || (var_x < 0) ||
-              (sqrt(var_x) <= sqrt(arma::datum::eps)))) {
-            arma_scale[i] = NA_REAL;
-          } else if (center && scale) {
-            arma_scale[i] = (x_ij - mean_x) / sqrt(var_x);
-          } else if (!center && scale) {
-            arma_scale[i] = x_ij / sqrt(var_x);
-          } else if (center && !scale) {
-            arma_scale[i] = x_ij - mean_x;
-          } else if (!center && !scale) {
-            arma_scale[i] = x_ij;
+          if (scale) {
+            
+            // don't divide if negative or sqrt is zero
+            if (n_obs == 1) {
+              arma_scale[i] = NA_REAL;
+            } else if (var_x < 0){
+              arma_scale[i] = NA_REAL;
+            } else if (sqrt(var_x) <= sqrt(arma::datum::eps)) {
+              arma_scale[i] = NA_REAL;
+            } else if (center) {
+              arma_scale[i] = (x_first - mean_x) / sqrt(var_x);
+            } else {
+              arma_scale[i] = x_first / sqrt(var_x);
+            }
+            
+          } else {
+            if (center) {
+              arma_scale[i] = x_first - mean_x;
+            } else {
+              arma_scale[i] = x_first;
+            }
           }
           
         } else {
@@ -3250,32 +3171,32 @@ struct RollScaleOfflineVec : public Worker {
       // from 1D to 2D array
       int i = z;
       
-      long double mean_x = 0;
-      long double var_x = 0;
-      
       // don't compute if missing value and 'na_restore' argument is TRUE
-      if ((!na_restore) || (na_restore && !std::isnan(x[i]))) {
+      if (!na_restore || !std::isnan(x[i])) {
+        
+        bool is_na = false;
+        long double mean_x = 0;
+        long double var_x = 0;
         
         if (center) {
           
-          int count = 0;
           long double sum_w = 0;
           long double sum_x = 0;
           
           // number of observations is either the window size or,
           // for partial results, the number of the current row
-          while ((width > count) && (i >= count)) {
+          for (int count = 0; (count < width) && (count <= i); count++) {
             
             // don't include if missing value
-            if (!std::isnan(x[i - count])) {
+            is_na = std::isnan(x[i - count]);
+            
+            if (!is_na) {
               
               // compute the sum
               sum_w += arma_weights[n - count - 1];
               sum_x += arma_weights[n - count - 1] * x[i - count];
               
             }
-            
-            count += 1;
             
           }
           
@@ -3286,36 +3207,36 @@ struct RollScaleOfflineVec : public Worker {
         
         if (scale) {
           
-          int count = 0;
-          int n_obs = 0;
           long double sum_w = 0;
           long double sumsq_w = 0;
           long double sumsq_x = 0;
           
           // number of observations is either the window size or,
           // for partial results, the number of the current row
-          while ((width > count) && (i >= count)) {
+          for (int count = 0; (count < width) && (count <= i); count++) {
             
             // don't include if missing value
-            if (!std::isnan(x[i - count])) {
+            is_na = std::isnan(x[i - count]);
+            
+            if (!is_na) {
               
               sum_w += arma_weights[n - count - 1];
               sumsq_w += pow(arma_weights[n - count - 1], 2.0);
               
               // compute the sum of squares with 'center' argument
               if (center) {
+                
                 sumsq_x += arma_weights[n - count - 1] *
-                  pow(x[i - count] - mean_x, (long double)2.0);
+                  (x[i - count] - mean_x) * (x[i - count] - mean_x);
+                
               } else if (!center) {
+                
                 sumsq_x += arma_weights[n - count - 1] *
-                  pow(x[i - count], 2.0);
+                  x[i - count] * x[i - count];
+                
               }
               
-              n_obs += 1;
-              
             }
-            
-            count += 1;
             
           }
           
@@ -3324,45 +3245,52 @@ struct RollScaleOfflineVec : public Worker {
           
         }
         
-        int count = 0;
         int n_obs = 0;
-        bool any_na = false;
-        long double x_ij = 0;
+        long double x_first = 0;
         
         // number of observations is either the window size or,
         // for partial results, the number of the current row
-        while ((width > count) && (i >= count)) {
+        for (int count = 0; (count < width) && (count <= i); count++) {
           
           // don't include if missing value
-          if (!std::isnan(x[i - count])) {
+          is_na = std::isnan(x[i - count]);
+          
+          if (!is_na) {
             
             // keep first non-missing value
-            if (!any_na) {
-              x_ij = x[i - count];
+            if (n_obs == 0) {
+              x_first = x[i - count];
             }
             
-            any_na = true;
             n_obs += 1;
             
           }
-          
-          count += 1;
           
         }
         
         if (n_obs >= min_obs) {
           
-          if (scale && ((n_obs <= 1) || (var_x < 0) ||
-              (sqrt(var_x) <= sqrt(arma::datum::eps)))) {
-            arma_scale[i] = NA_REAL;
-          } else if (center && scale) {
-            arma_scale[i] = (x_ij - mean_x) / sqrt(var_x);
-          } else if (!center && scale) {
-            arma_scale[i] = x_ij / sqrt(var_x);
-          } else if (center && !scale) {
-            arma_scale[i] = x_ij - mean_x;
-          } else if (!center && !scale) {
-            arma_scale[i] = x_ij;
+          if (scale) {
+            
+            // don't divide if negative or sqrt is zero
+            if (n_obs == 1) {
+              arma_scale[i] = NA_REAL;
+            } else if (var_x < 0){
+              arma_scale[i] = NA_REAL;
+            } else if (sqrt(var_x) <= sqrt(arma::datum::eps)) {
+              arma_scale[i] = NA_REAL;
+            } else if (center) {
+              arma_scale[i] = (x_first - mean_x) / sqrt(var_x);
+            } else {
+              arma_scale[i] = x_first / sqrt(var_x);
+            }
+            
+          } else {
+            if (center) {
+              arma_scale[i] = x_first - mean_x;
+            } else {
+              arma_scale[i] = x_first;
+            }
           }
           
         } else {
